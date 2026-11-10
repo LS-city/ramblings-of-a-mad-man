@@ -1,0 +1,22 @@
+HOW TO ADD A CHAPTER
+Everything above the first chapter is ignored, so these notes never show in the book.
+
+Start each new chapter with a line that begins with "# " followed by the title.
+Leave a blank line between paragraphs.
+Start a paragraph with ( for the second voice (red italics).
+A line with *** makes a scene break.
+Short lines kept together (no blank line between them) come out as a poem.
+
+New chapters appear after "A Terrible Mind" and before "Ramblings of a Patch",
+in the order you write them here. Chapter numbers update on their own.
+
+Example (remove the two spaces before the # to make it real):
+
+  # Night Shift
+
+  The register hums.
+
+  ( you know you love it here )
+
+Add your chapters below this line.
+----------------------------------------------------------------
