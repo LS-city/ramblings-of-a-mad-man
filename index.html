@@ -314,6 +314,15 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .au-row .t { flex: 1; min-width: 0; font-size: 14px; }
 .au-row .t small { display: block; color: var(--ui-dim); font-size: 12px; margin-top: 2px; }
 .au-row .btn { padding: 5px 10px; font-size: 12px; }
+.gh-box { margin: 4px 10px 14px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; line-height: 1.5; color: var(--ui); }
+.gh-lead { margin: 0 0 8px; }
+.gh-steps { margin: 0 0 10px; padding-left: 18px; color: var(--ui-dim); }
+.gh-steps b { color: var(--ui); font-weight: 600; }
+.gh-steps a { color: #d0765f; }
+.gh-in { width: 100%; margin-bottom: 8px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: #111318; color: var(--ui); font: 13px var(--f-ui); }
+.gh-msg { margin: 8px 0 0; color: #d0765f; }
+.gh-msg:empty { display: none; }
+.linkbtn { background: none; border: 0; padding: 0; color: #d0765f; text-decoration: underline; font-size: 13px; }
 #measure { position: absolute; left: -20000px; top: 0; width: var(--pw); height: var(--ph); visibility: hidden; pointer-events: none; }
 .loading { position: absolute; inset: 0; display: grid; place-items: center; font-family: var(--f-type); color: var(--ui-dim); }
 @media (prefers-reduced-motion: reduce) { .book { transition: none; } }
@@ -367,6 +376,22 @@ button { font: inherit; color: inherit; cursor: pointer; }
   <div class="dr-head"><h2>Your chapters</h2><button class="x" data-close aria-label="Close">×</button></div>
   <div class="dr-body">
     <p class="empty-note" style="padding-bottom:6px">Only you see this. New chapters go in after the last one you added, before "Ramblings of a Patch". When you publish, everyone with the link gets the updated book.</p>
+    <div id="ghConnect" class="gh-box" hidden>
+      <p class="gh-lead">Connect your GitHub once on this device so chapters you write here save to your book.</p>
+      <ol class="gh-steps">
+        <li>Open <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">GitHub's new token page</a>.</li>
+        <li>Name it <b>Ramblings book</b> and set an expiration you like.</li>
+        <li>Repository access: <b>Only select repositories</b>, then pick <b>ramblings-of-a-mad-man</b>.</li>
+        <li>Permissions, Repository permissions: set <b>Contents</b> to <b>Read and write</b>.</li>
+        <li>Click Generate token, copy it, and paste it here.</li>
+      </ol>
+      <input id="ghToken" class="gh-in" type="password" placeholder="github_pat_…" autocomplete="off" spellcheck="false">
+      <button class="btn" id="ghSave">Connect</button>
+      <p class="gh-msg" id="ghMsg" role="status"></p>
+    </div>
+    <div id="ghConnected" class="gh-box" hidden>
+      <p class="gh-lead">Connected to GitHub on this device. <button class="linkbtn" id="ghOut">Disconnect</button></p>
+    </div>
     <button class="btn" id="newChapter" style="margin:4px 10px 12px">+ New chapter</button>
     <div id="authorList"></div>
   </div>
@@ -925,7 +950,75 @@ function openChapEditor(id) {
 }
 function closeChapEditor() { $("chapEditor").hidden = true; }
 function setBusy(b) { ["chSave", "chDelete", "chCancel"].forEach(id => $(id).disabled = b); }
+/* GitHub author mode (book hosted on GitHub Pages) */
+const GH = { repo: "LS-city/ramblings-of-a-mad-man", path: "chapters.txt", branch: "main", key: "ramblings-gh-token" };
+let ghMode = false;
+const ghToken = () => { try { return localStorage.getItem(GH.key) || ""; } catch (e) { return ""; } };
+const ghApi = (sub, opts = {}) => fetch("https://api.github.com/repos/" + GH.repo + sub, {
+  ...opts, headers: { Accept: "application/vnd.github+json", Authorization: "Bearer " + ghToken(), ...(opts.body ? { "Content-Type": "application/json" } : {}) } });
+const b64dec = b => new TextDecoder().decode(Uint8Array.from(atob(b.replace(/\s/g, "")), c => c.charCodeAt(0)));
+function b64enc(str) { const by = new TextEncoder().encode(str); let bin = ""; for (let i = 0; i < by.length; i += 8192) bin += String.fromCharCode.apply(null, by.subarray(i, i + 8192)); return btoa(bin); }
+async function ghGetFile() {
+  const r = await ghApi("/contents/" + GH.path + "?ref=" + GH.branch + "&t=" + Date.now());
+  if (!r.ok) throw { status: r.status };
+  const j = await r.json();
+  return { text: b64dec(j.content || ""), sha: j.sha };
+}
+function ghSerialize(oldText, extra) {
+  const m = oldText.search(/^# /m);
+  const header = (m < 0 ? oldText : oldText.slice(0, m)).replace(/\s+$/, "") + "\n\n";
+  return header + extra.map(e => "# " + e.title.replace(/\s+/g, " ").trim() + "\n\n" + e.text.replace(/\r/g, "").trim() + "\n").join("\n");
+}
+function applyExtra(extra) { EXTRA = extra; BOOK = assemble(); relayout(true); buildAuthorList(); }
+async function ghRefresh() {
+  try { const f = await ghGetFile(); applyExtra(parseChapterFile(f.text)); } catch (e) {}
+}
+function ghErrorText(e) {
+  const st = e && e.status;
+  if (st === 401) return "GitHub didn't accept the token. It may have expired. Disconnect, then connect with a new one.";
+  if (st === 403 || st === 404) return "The token can't change this book. Check it has Contents: Read and write on ramblings-of-a-mad-man.";
+  return "Couldn't reach GitHub. Check your connection and try again. Your text is still here.";
+}
+async function ghPublish(extra, okMsg) {
+  if (!ghToken()) { $("chStatus").textContent = "Connect GitHub first (Your chapters panel)."; return; }
+  setBusy(true); $("chStatus").textContent = "Saving to GitHub…";
+  const isDelete = extra.length < EXTRA.length;
+  const titleNow = $("chTitle").value.trim();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const f = await ghGetFile();
+      const body = { message: isDelete ? "Remove a chapter" : (editingId ? "Edit chapter: " : "Add chapter: ") + titleNow, content: b64enc(ghSerialize(f.text, extra)), sha: f.sha, branch: GH.branch };
+      const r = await ghApi("/contents/" + GH.path, { method: "PUT", body: JSON.stringify(body) });
+      if (r.status === 409 && attempt === 0) continue;
+      if (!r.ok) throw { status: r.status };
+      try { sessionStorage.removeItem("chapterDraft"); } catch (_) {}
+      applyExtra(extra);
+      $("chStatus").textContent = (isDelete ? "Deleted. " : "Saved to your book. ") + "You see it now; everyone else sees it within a few minutes.";
+      setBusy(false); $("chSave").disabled = true; $("chDelete").disabled = true;
+      return;
+    } catch (e) { setBusy(false); $("chStatus").textContent = ghErrorText(e); return; }
+  }
+}
+function ghShowState() {
+  const has = !!ghToken();
+  $("ghConnect").hidden = has; $("ghConnected").hidden = !has; $("newChapter").hidden = !has;
+}
+$("ghSave").onclick = async () => {
+  const t = $("ghToken").value.trim();
+  if (!t) { $("ghMsg").textContent = "Paste your token first."; return; }
+  try { localStorage.setItem(GH.key, t); } catch (e) { $("ghMsg").textContent = "This browser won't save the token (private mode?)."; return; }
+  $("ghMsg").textContent = "Checking…";
+  try {
+    const r = await ghApi("");
+    const j = r.ok ? await r.json() : null;
+    if (!j || !(j.permissions && j.permissions.push)) throw { status: r.ok ? 403 : r.status };
+    $("ghToken").value = ""; $("ghMsg").textContent = ""; ghShowState(); ghRefresh();
+  } catch (e) { try { localStorage.removeItem(GH.key); } catch (_) {} $("ghMsg").textContent = ghErrorText(e); }
+};
+$("ghOut").onclick = () => { try { localStorage.removeItem(GH.key); } catch (e) {} ghShowState(); };
+
 async function publishExtra(extra, okMsg) {
+  if (ghMode) return ghPublish(extra, okMsg);
   if (!artifactApi) { $("chStatus").textContent = "Publishing only works when you open the book on claude.ai."; return; }
   setBusy(true); $("chStatus").textContent = "Publishing…";
   try {
@@ -957,14 +1050,19 @@ $("chDelete").onclick = () => {
 };
 $("chCancel").onclick = closeChapEditor;
 $("newChapter").onclick = () => openChapEditor(null);
-$("btnAuthor").onclick = () => { buildAuthorList(); showDrawer("authorDrawer"); };
+$("btnAuthor").onclick = () => { buildAuthorList(); if (ghMode) { ghShowState(); if (ghToken()) ghRefresh(); } showDrawer("authorDrawer"); };
 $("authorList").addEventListener("click", e => {
   const ed = e.target.closest("[data-edit]"); if (ed) return openChapEditor(ed.dataset.edit);
   const rd = e.target.closest("[data-read]");
   if (rd) { const ci = BOOK.findIndex(c => c.id === rd.dataset.read); closeAll(); if (ci >= 0) goPage(chapterStart[ci]); }
 });
 (async function authorInit() {
-  const C = window.claude; if (!C || !C.use) return;
+  const C = window.claude;
+  if (!C || !C.use) {
+    if (!/^https?:$/.test(location.protocol)) return;
+    if (location.hash === "#author" || ghToken()) { ghMode = true; $("btnAuthor").hidden = false; }
+    return;
+  }
   try {
     const [art, user] = await Promise.all([C.use("artifact"), C.use("user")]);
     if (!art || !user || !(await user.isOwner())) return;
